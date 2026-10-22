@@ -1,6 +1,8 @@
 """Security watchdog for enforcing URL access policies."""
 
+import re
 from typing import TYPE_CHECKING, ClassVar
+from urllib.parse import urlparse
 
 from bubus import BaseEvent
 
@@ -170,12 +172,15 @@ class SecurityWatchdog(BaseWatchdog):
 			return True
 
 		# Parse the URL to extract components
-		from urllib.parse import urlparse
-
 		try:
 			parsed = urlparse(url)
 		except Exception:
 			# Invalid URL
+			return False
+
+		# Browsers can interpret backslashes as authority separators. Reject these URLs
+		# before matching so prohibited rules cannot turn invalid input into permission.
+		if '\\' in parsed.netloc:
 			return False
 
 		# Allow data: and blob: URLs (they don't have hostnames)
@@ -264,9 +269,30 @@ class SecurityWatchdog(BaseWatchdog):
 		else:
 			# Exact match
 			if '://' in pattern:
-				# Full URL pattern
-				if url.startswith(pattern):
-					return True
+				# Compare origins before applying the existing path/query/fragment prefix match.
+				try:
+					parsed_url = urlparse(url)
+					parsed_pattern = urlparse(pattern)
+					# Browsers treat backslashes as authority separators for HTTP(S) URLs.
+					if '\\' in parsed_url.netloc or '\\' in parsed_pattern.netloc:
+						return False
+					default_ports = {'http': 80, 'https': 443}
+					url_port = parsed_url.port if parsed_url.port is not None else default_ports.get(parsed_url.scheme)
+					pattern_port = (
+						parsed_pattern.port if parsed_pattern.port is not None else default_ports.get(parsed_pattern.scheme)
+					)
+					if (
+						parsed_url.scheme != parsed_pattern.scheme
+						or parsed_url.hostname != parsed_pattern.hostname
+						or url_port != pattern_port
+					):
+						return False
+					# Keep raw suffixes so empty query/fragment delimiters retain their prefix semantics.
+					url_suffix = re.sub(r'^[^/?#]*', '', url.partition('://')[2], count=1)
+					pattern_suffix = re.sub(r'^[^/?#]*', '', pattern.partition('://')[2], count=1)
+					return url_suffix.startswith(pattern_suffix)
+				except ValueError:
+					return False
 			else:
 				# Domain-only pattern (case-insensitive comparison)
 				if host.lower() == pattern.lower():
