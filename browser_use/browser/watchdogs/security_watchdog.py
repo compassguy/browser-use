@@ -178,6 +178,11 @@ class SecurityWatchdog(BaseWatchdog):
 			# Invalid URL
 			return False
 
+		# Browsers can interpret backslashes as authority separators. Reject these URLs
+		# before matching so prohibited rules cannot turn invalid input into permission.
+		if '\\' in parsed.netloc:
+			return False
+
 		# Allow data: and blob: URLs (they don't have hostnames)
 		if parsed.scheme in ['data', 'blob']:
 			return True

@@ -583,8 +583,6 @@ class TestFullUrlPatterns:
 			('https://localhost', 'https://localhost.evil.invalid/', False),
 			('https://localhost', 'https://localhost@evil.invalid/', False),
 			('https://localhost', 'https://localhost:password@evil.invalid/', False),
-			('https://localhost', r'https://evil.invalid\@localhost/', False),
-			('https://localhost', r'https://user:password\@localhost/', False),
 			('https://localhost', 'https://user:password@localhost/', True),
 			('https://localhost', 'https://LOCALHOST/path', True),
 			('HTTPS://LOCALHOST', 'https://localhost/path', True),
@@ -602,6 +600,7 @@ class TestFullUrlPatterns:
 			('http://[::1]:8080', 'http://[::1]:8080/path', True),
 			('http://[::1]:8080', 'http://[::1]:8081/path', False),
 			('https://localhost/app', 'https://localhost/app/page', True),
+			('https://localhost/app', r'https://localhost/app\page', True),
 			('https://localhost/app', 'https://localhost/application', True),
 			('https://localhost/app', 'https://localhost/other', False),
 			('https://localhost/app/', 'https://localhost/app', False),
@@ -621,6 +620,7 @@ class TestFullUrlPatterns:
 		],
 	)
 	def test_full_url_matching(self, prohibited: bool, pattern: str, url: str, matches: bool):
+		"""Apply origin and suffix matching consistently to allowlists and prohibitlists."""
 		from bubus import EventBus
 
 		from browser_use.browser.watchdogs.security_watchdog import SecurityWatchdog
@@ -645,11 +645,67 @@ class TestFullUrlPatterns:
 		],
 	)
 	def test_malformed_full_urls_do_not_match(self, pattern: str, url: str):
+		"""Reject malformed URL authorities without raising a parsing error."""
 		from bubus import EventBus
 
 		from browser_use.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		profile = BrowserProfile(allowed_domains=[pattern], headless=True, user_data_dir=None)
+		watchdog = SecurityWatchdog(browser_session=BrowserSession(browser_profile=profile), event_bus=EventBus())
+
+		assert watchdog._is_url_allowed(url) is False
+
+
+class TestAmbiguousAuthorities:
+	"""Reject authorities that browsers and urllib parse differently."""
+
+	@pytest.mark.parametrize(
+		'url',
+		[
+			r'https://localhost\@evil.invalid/',
+			r'https://evil.invalid\@localhost/',
+			r'https://user:password\@localhost/',
+		],
+	)
+	@pytest.mark.parametrize(
+		('allowed_domains', 'prohibited_domains'),
+		[
+			(['https://localhost'], None),
+			(None, ['https://localhost']),
+			(['localhost'], None),
+			(None, ['localhost']),
+			({'localhost'}, None),
+			(None, {'localhost'}),
+			(['*'], None),
+			(None, ['*.localhost']),
+			(None, None),
+		],
+		ids=[
+			'allow-url',
+			'prohibit-url',
+			'allow-domain',
+			'prohibit-domain',
+			'allow-set',
+			'prohibit-set',
+			'allow-glob',
+			'prohibit-glob',
+			'unrestricted',
+		],
+	)
+	def test_backslash_authorities_are_rejected(
+		self, url: str, allowed_domains: list[str] | set[str] | None, prohibited_domains: list[str] | set[str] | None
+	):
+		"""Treat ambiguous authorities as invalid input, never as a prohibited-rule non-match."""
+		from bubus import EventBus
+
+		from browser_use.browser.watchdogs.security_watchdog import SecurityWatchdog
+
+		profile = BrowserProfile(
+			allowed_domains=allowed_domains,
+			prohibited_domains=prohibited_domains,
+			headless=True,
+			user_data_dir=None,
+		)
 		watchdog = SecurityWatchdog(browser_session=BrowserSession(browser_profile=profile), event_bus=EventBus())
 
 		assert watchdog._is_url_allowed(url) is False
