@@ -1,3 +1,5 @@
+import pytest
+
 from browser_use.browser import BrowserProfile, BrowserSession
 
 
@@ -567,3 +569,87 @@ class TestDomainListOptimization:
 		# Should work correctly
 		assert watchdog._is_url_allowed('https://blocked0.com') is False
 		assert watchdog._is_url_allowed('https://example.com') is True
+
+
+class TestFullUrlPatterns:
+	"""Exercise URL policy decisions only; none of these URLs are fetched."""
+
+	@pytest.mark.parametrize('prohibited', [False, True], ids=['allowlist', 'prohibitlist'])
+	@pytest.mark.parametrize(
+		('pattern', 'url', 'matches'),
+		[
+			('https://localhost', 'https://localhost', True),
+			('https://localhost', 'https://localhost/path?query=1#fragment', True),
+			('https://localhost', 'https://localhost.evil.invalid/', False),
+			('https://localhost', 'https://localhost@evil.invalid/', False),
+			('https://localhost', 'https://localhost:password@evil.invalid/', False),
+			('https://localhost', r'https://evil.invalid\@localhost/', False),
+			('https://localhost', r'https://user:password\@localhost/', False),
+			('https://localhost', 'https://user:password@localhost/', True),
+			('https://localhost', 'https://LOCALHOST/path', True),
+			('HTTPS://LOCALHOST', 'https://localhost/path', True),
+			('https://localhost', 'https://localhost:443/path', True),
+			('https://localhost:443', 'https://localhost/path', True),
+			('http://localhost', 'http://localhost:80/path', True),
+			('http://localhost:80', 'http://localhost/path', True),
+			('https://localhost', 'http://localhost/path', False),
+			('https://localhost', 'https://localhost:8443/path', False),
+			('https://localhost:8443', 'https://localhost:8443/path', True),
+			('https://localhost:8443', 'https://localhost:84430/path', False),
+			('https://localhost:8443', 'https://localhost/path', False),
+			('https://localhost', 'https://localhost:0/', False),
+			('https://localhost:0', 'https://localhost:0/', True),
+			('http://[::1]:8080', 'http://[::1]:8080/path', True),
+			('http://[::1]:8080', 'http://[::1]:8081/path', False),
+			('https://localhost/app', 'https://localhost/app/page', True),
+			('https://localhost/app', 'https://localhost/application', True),
+			('https://localhost/app', 'https://localhost/other', False),
+			('https://localhost/app/', 'https://localhost/app', False),
+			('https://localhost/app', 'https://localhost.evil.invalid/app', False),
+			('https://localhost/app', 'https://user:password@localhost/app/page', True),
+			('https://localhost/app;v=1?x=1', 'https://localhost/app;v=1?x=1&y=2', True),
+			('https://localhost/app?x=1', 'https://localhost/app?x=2', False),
+			('https://localhost/app?', 'https://localhost/application', False),
+			('https://localhost/app?', 'https://localhost/app?x=1', True),
+			('https://localhost/app#', 'https://localhost/application', False),
+			('https://localhost/app#', 'https://localhost/app#section', True),
+			('https://localhost/app;', 'https://localhost/application', False),
+			('https://localhost/app;', 'https://localhost/app;v=1', True),
+			('https://localhost/app#section', 'https://localhost/app#section-two', True),
+			('chrome://version', 'chrome://version/', True),
+			('chrome://version', 'chrome-extension://version/', False),
+		],
+	)
+	def test_full_url_matching(self, prohibited: bool, pattern: str, url: str, matches: bool):
+		from bubus import EventBus
+
+		from browser_use.browser.watchdogs.security_watchdog import SecurityWatchdog
+
+		profile = BrowserProfile(
+			allowed_domains=None if prohibited else [pattern],
+			prohibited_domains=[pattern] if prohibited else None,
+			headless=True,
+			user_data_dir=None,
+		)
+		watchdog = SecurityWatchdog(browser_session=BrowserSession(browser_profile=profile), event_bus=EventBus())
+
+		assert watchdog._is_url_allowed(url) is (matches != prohibited)
+
+	@pytest.mark.parametrize(
+		('pattern', 'url'),
+		[
+			('https://localhost', 'https://localhost:invalid/'),
+			('https://localhost', 'https://localhost:65536/'),
+			('https://localhost:invalid', 'https://localhost:invalid/'),
+			('https://[::1', 'https://[::1]/'),
+		],
+	)
+	def test_malformed_full_urls_do_not_match(self, pattern: str, url: str):
+		from bubus import EventBus
+
+		from browser_use.browser.watchdogs.security_watchdog import SecurityWatchdog
+
+		profile = BrowserProfile(allowed_domains=[pattern], headless=True, user_data_dir=None)
+		watchdog = SecurityWatchdog(browser_session=BrowserSession(browser_profile=profile), event_bus=EventBus())
+
+		assert watchdog._is_url_allowed(url) is False
